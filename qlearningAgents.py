@@ -1,5 +1,6 @@
 import time
 
+import numpy as np
 import torch
 from IPython import display
 from matplotlib import pyplot as plt
@@ -220,28 +221,43 @@ class ApproximateQAgent(PacmanQAgent):
 class DeepQAgent(ReinforcementAgent):
     BATCH_SIZE = 32
     LR = 1e-4
-    UPDATE_PREVIOUS_STEPS = 10
+    UPDATE_PREVIOUS_STEPS = 100
     TERMINAL_TOKEN = 'TERMINAL_STATE'
 
     def __init__(self, mdp, **args):
         ReinforcementAgent.__init__(self, **args)
-        self.states = mdp.getStates()
-        self.possibleActions = set()
-        for state in self.states:
-            for action in mdp.getPossibleActions(state):
-                if action not in self.possibleActions:
-                    self.possibleActions.add(action)
-        self.possibleActions = list(self.possibleActions)
-        # self.possibleActions = ['arm-down', 'arm-up', 'hand-down', 'hand-up']
+        #self.states = mdp.getStates()
+        #self.possibleActions = set()
+        #for state in self.states:
+        #    for action in mdp.getPossibleActions(state):
+        #        if action not in self.possibleActions:
+        #            self.possibleActions.add(action)
+        #self.possibleActions = list(self.possibleActions)
+        self.possibleActions = ['arm-down', 'arm-up', 'hand-down', 'hand-up']
 
         self.previous_net = NeuralNet(2, len(self.possibleActions))
         self.policy_net = NeuralNet(2, len(self.possibleActions))
         self.optimizer = get_optimizer(self.policy_net, learning_rate=self.LR)
         self.criterion = get_criterion()
-        self.memory = ReplayMemory(1000)
+        self.memory = ReplayMemory(10000)
         self.steps_done = 0
         self.episode_durations = []
         self.epsilon = 1.
+        self.loss_arr = []
+        self.lengths_arr = []
+        self.current_length = 0
+        self.fig, (self.ax_loss, self.ax_length) = plt.subplots(1, 2)
+        self.ax_loss.set_title('Loss')
+        self.ax_loss.set_xlabel('Iterations')
+        self.ax_loss.set_ylabel('Q-function loss')
+
+        self.ax_length.set_title('Steps until reward')
+        self.ax_length.set_xlabel('Episodes')
+        self.ax_length.set_ylabel('Steps')
+
+        self.fig.show()
+
+
 
     def getQValue(self, state, action):
         """
@@ -253,17 +269,11 @@ class DeepQAgent(ReinforcementAgent):
         values = self.policy_net.forward(input)
         return values[self.possibleActions.index(action)].item()
 
-    def computeValueFromQValues(self, state):
-        actions = self.getLegalActions(state)
-        if len(actions) == 0:
-            return 0
-        return max([self.getQValue(state, action) for action in actions])
-
     def computeActionFromQValues(self, state):
-        best_q_value = self.computeValueFromQValues(state)
         legal_actions = self.getLegalActions(state)
-        best_action = [action for action in legal_actions if self.getQValue(state, action) == best_q_value]
-        policy = random.choice(best_action)
+        action_values = [self.getQValue(state, action) for action in legal_actions]
+        policy = legal_actions[np.argmax(action_values)]
+        print(policy)
         return policy
 
     def getAction(self, state):
@@ -304,10 +314,15 @@ class DeepQAgent(ReinforcementAgent):
             torch.tensor(reward).unsqueeze(0))
         self.learn_from_experience()
         self.steps_done += 1
+        self.current_length += 1
+
+        if reward > 0:
+            self.lengths_arr.append(self.current_length)
+            self.current_length = 0
 
         if self.epsilon > 0.2:
             print("---EPSILON---", self.epsilon)
-            self.epsilon -= 0.001
+            self.epsilon -= 0.0002
 
         if self.steps_done % self.UPDATE_PREVIOUS_STEPS == 0:
             print("---COPYING WEIGHTS---", self.epsilon)
@@ -315,6 +330,10 @@ class DeepQAgent(ReinforcementAgent):
             policy_net_weights = self.policy_net.state_dict()
             for key in policy_net_weights:
                 prev_net_weights[key] = policy_net_weights[key]
+        if self.steps_done % 100 == 0:
+            self.ax_loss.plot(self.loss_arr)
+            self.ax_length.plot(self.lengths_arr)
+            #plt.pause(0.05)
 
     def learn_from_experience(self):
         if len(self.memory) < self.BATCH_SIZE:
@@ -352,7 +371,22 @@ class DeepQAgent(ReinforcementAgent):
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
         self.optimizer.step()
+        self.loss_arr.append(loss.item())
+
+    def startEpisode(self):
+        """
+          Called by environment when new episode is starting
+        """
+        self.lastState = None
+        self.lastAction = None
+        self.episodeRewards = 0.0
+
+    def stopEpisode(self):
+        plt.plot(self.loss_arr)
+        plt.pause(0.05)
+
 
     def plot_durations(self, show_result=False):
         plt.figure(1)
